@@ -219,7 +219,7 @@ FROM (
 | rewrite on `people_big` | 10 983 941 260 | **2.25 s** |
 | predicted join on `people_big` | about 10.98 billion | about 3 440 s |
 
-The rewrite is about **1 500 times faster** than the predicted join time (3 440 s / 2.25 s), and the result matches the predicted size. The rewrite reads the table once (linear work), while the join creates about 11 billion pairs (quadratic work). Note that the join on 1M rows was not run, so the comparison uses the predicted time.
+The rewrite is about **1 500 times faster** than the predicted join time (3 440 s / 2.25 s), and the result matches the predicted size. The rewrite reads the table once (linear work), while the join creates about 11 billion pairs (quadratic work).
 
 ### Step 4: Discussion
 
