@@ -1,0 +1,276 @@
+# Exercise 2: Operation Data Plane with OLTPs
+
+Solutions for Activity 2.1 (E-commerce analytical queries) and Activity 2.2 (Why is the self-join so slow?). All queries were run on PostgreSQL 18.1 in the `pg-bigdata` Docker container.
+
+---
+
+## Activity 2.1: PostgreSQL Analytical Queries (E-commerce)
+
+### Table definition
+
+```sql
+DROP TABLE IF EXISTS orders;
+
+CREATE TABLE orders (
+  customer_name    TEXT,
+  product_category TEXT,
+  quantity         INTEGER,
+  price_per_unit   NUMERIC(10,2),
+  order_date       DATE,
+  country          TEXT
+);
+
+\COPY orders(customer_name,product_category,quantity,price_per_unit,order_date,country) FROM '/data/orders_1M.csv' DELIMITER ',' CSV HEADER
+```
+
+Type choices: `NUMERIC(10,2)` for prices so money is stored exactly (no floating point rounding), `INTEGER` for quantity, `DATE` for the order date, `TEXT` for names, categories and countries. The table holds 1,000,000 rows.
+
+### A. Which order has the highest `price_per_unit`?
+
+```sql
+SELECT *
+FROM orders
+ORDER BY price_per_unit DESC
+LIMIT 1;
+```
+
+```
+ customer_name | product_category | quantity | price_per_unit | order_date | country
+---------------+------------------+----------+----------------+------------+---------
+ Emma Brown    | Automotive       |        3 |        2000.00 | 2024-10-11 | Italy
+```
+
+The highest price is 2000.00, which is the upper limit of the `Automotive` price range in the generator. Several orders can share this value, and `LIMIT 1` returns just one of them.
+
+### B. Top 3 product categories by total quantity sold
+
+```sql
+SELECT product_category, SUM(quantity) AS total_quantity
+FROM orders
+GROUP BY product_category
+ORDER BY total_quantity DESC
+LIMIT 3;
+```
+
+```
+ product_category | total_quantity
+------------------+----------------
+ Health & Beauty  |         300842
+ Electronics      |         300804
+ Toys             |         300598
+```
+
+The three totals are almost identical. The generator picks the category and the quantity (1 to 5) uniformly at random, so every category sells about the same number of items (around 300,000). The ranking is only random noise.
+
+### C. Total revenue per product category
+
+```sql
+SELECT product_category, SUM(price_per_unit * quantity) AS revenue
+FROM orders
+GROUP BY product_category
+ORDER BY revenue DESC;
+```
+
+```
+ product_category |   revenue
+------------------+--------------
+ Automotive       | 306589798.86
+ Electronics      | 241525009.45
+ Home & Garden    |  78023780.09
+ Sports           |  61848990.83
+ Health & Beauty  |  46599817.89
+ Office Supplies  |  38276061.64
+ Fashion          |  31566368.22
+ Toys             |  23271039.02
+ Grocery          |  15268355.66
+ Books            |  12731976.04
+```
+
+Unlike quantity, revenue differs a lot between categories because each category has its own price range in the generator (Automotive 50 to 2000, Electronics 100 to 1500, Books 5 to 80). Automotive and Electronics together bring in about 64% of the total revenue of about 855.7 million.
+
+### D. Top 5 customers by total spending
+
+```sql
+SELECT customer_name,
+       SUM(price_per_unit * quantity) AS total_spent,
+       COUNT(*) AS order_count
+FROM orders
+GROUP BY customer_name
+ORDER BY total_spent DESC
+LIMIT 5;
+```
+
+```
+  customer_name  | total_spent | order_count
+----------------+-------------+-------------
+ Carol Taylor   |   991179.18 |        1028
+ Nina Lopez     |   975444.95 |         980
+ Daniel Jackson |   959344.48 |        1033
+ Carol Lewis    |   947708.57 |         943
+ Daniel Young   |   946030.14 |         973
+```
+
+`COUNT(*) AS order_count` counts the rows in each group. Each row is one order, so it gives the number of orders per customer name.
+
+### E. What do you notice, and why?
+
+**Observation.** Each of the top 5 "customers" has around 1,000 orders (943 to 1033) and their totals are all close to each other (about 946k to 991k). No real customer places 1,000 orders in two years with such similar spending.
+
+**Explanation.** In `dataset_generator.py`, `random_customer_name()` picks one of 32 first names and one of 33 last names, independently for every order. That gives only 32 x 33 = **1,056 possible names** for 1,000,000 orders. On average each name appears in 1,000,000 / 1,056 = **about 947 orders**, and the `order_count` values in D are all close to this average. The small differences come from random variation.
+
+There is no customer ID in the data, so `GROUP BY customer_name` merges many unrelated simulated people who happen to share a name into one "customer". The ranking in D therefore only shows which names happened to be drawn more often or got slightly more expensive orders. It says nothing about real customer behavior.
+
+Check:
+
+```sql
+SELECT COUNT(DISTINCT customer_name) FROM orders;
+```
+
+This should return 1056 (paste your result here: `____`).
+
+**Lesson.** A real system needs a unique `customer_id`. Names are not unique and must not be used as a key for grouping.
+
+---
+
+## Activity 2.2: Why is this self-join so slow?
+
+The query:
+
+```sql
+SELECT COUNT(*)
+FROM people_big p1
+JOIN people_big p2
+  ON p1.country = p2.country;
+```
+
+### Step 1: Measure how it grows
+
+```sql
+CREATE TABLE people_50k  AS SELECT * FROM people_big WHERE id <= 50000;
+CREATE TABLE people_100k AS SELECT * FROM people_big WHERE id <= 100000;
+CREATE TABLE people_200k AS SELECT * FROM people_big WHERE id <= 200000;
+```
+
+| rows in table | join result (`COUNT(*)`) | time |
+|---|---|---|
+| 50 000 | 27 501 822 | 5.9 s |
+| 100 000 | 109 946 508 | 30.1 s |
+| 200 000 | 439 395 606 | 137.6 s (2 min 17 s) |
+| 1 000 000 (prediction) | about 10.98 billion | about 3 440 s (about 57 min) |
+| 1 000 000 (actual result, from the Step 3 rewrite) | 10 983 941 260 | not run as a join |
+
+**Growth factors when the input doubles**
+
+| step | result grows by | time grows by |
+|---|---|---|
+| 50k to 100k | 109 946 508 / 27 501 822 = 4.0x | 30.1 / 5.9 = 5.1x |
+| 100k to 200k | 439 395 606 / 109 946 508 = 4.0x | 137.6 / 30.1 = 4.6x |
+
+When the rows double, the result grows by **4x**, and the time by roughly **4x to 5x**. This is quadratic growth. If a country has k people, the join pairs every person with every person of the same country (including themselves), so that country contributes k x k pairs. Doubling the table doubles every k, so the number of pairs grows 2 x 2 = 4 times. The time follows the number of pairs because the database has to produce and count every pair. The time grew slightly faster than 4x, probably because larger joins use more memory and disk work.
+
+**Prediction for 1M rows.** 1M is 5 times larger than 200k, so the result grows by 5 x 5 = 25 times: 439 395 606 x 25 = about 10.98 billion. The time grows by about 25 times too: 137.6 s x 25 = about 3 440 s, which is about 57 minutes. This matches the exercise statement ("more than 10 minutes"). The real result from Step 3 is 10 983 941 260, so the size prediction was almost exact.
+
+### Step 2: Does an index help?
+
+```sql
+CREATE INDEX idx_people_100k_country ON people_100k(country);
+ANALYZE people_100k;
+
+SELECT COUNT(*) FROM people_100k p1 JOIN people_100k p2 ON p1.country = p2.country;
+
+EXPLAIN ANALYZE
+SELECT COUNT(*) FROM people_100k p1 JOIN people_100k p2 ON p1.country = p2.country;
+```
+
+Results:
+
+| | result | time |
+|---|---|---|
+| without index | 109 946 508 | 30.1 s |
+| with index on `country` | 109 946 508 | 16.1 s |
+
+The index made the query about **1.9x faster**, but the result is still 109.9 million pairs and the query still has to produce and count every one of them.
+
+`EXPLAIN ANALYZE` output (paste yours here):
+
+```
+<paste the EXPLAIN ANALYZE output here>
+```
+
+What to point out in the plan: the join type used, whether the index is actually used, and the number of rows that come out of the join node (about 110 million). The large row count at the join node is where the time goes.
+
+**Why the index helps only a little.** An index is useful when a query needs a few rows out of many, because it avoids reading the whole table. Here there are only a small number of countries, so each person matches thousands of other people. There is nothing to skip. The index may make the lookup of matches a bit cheaper, which explains the constant-factor gain, but it cannot reduce the number of pairs. The cost is dominated by the output size, not by finding rows.
+
+### Step 3: Rewrite without a join
+
+If a country has k people, it contributes k x k pairs. So the total number of pairs is the sum of k x k over all countries, and we only need the count of people per country:
+
+```sql
+SELECT SUM(people_per_country * people_per_country) AS pair_count
+FROM (
+  SELECT country, COUNT(*) AS people_per_country
+  FROM people_100k
+  GROUP BY country
+) AS country_counts;
+```
+
+Result on `people_100k`: **109 946 508**, exactly the same as the join.
+
+On the full table:
+
+```sql
+SELECT SUM(people_per_country * people_per_country) AS pair_count
+FROM (
+  SELECT country, COUNT(*) AS people_per_country
+  FROM people_big
+  GROUP BY country
+) AS country_counts;
+```
+
+| | result | time |
+|---|---|---|
+| rewrite on `people_big` | 10 983 941 260 | **2.25 s** |
+| predicted join on `people_big` | about 10.98 billion | about 3 440 s |
+
+The rewrite is about **1 500 times faster** than the predicted join time (3 440 s / 2.25 s), and the result matches the predicted size. The rewrite reads the table once (linear work), while the join creates about 11 billion pairs (quadratic work). Note that the join on 1M rows was not run, so the comparison uses the predicted time.
+
+### Step 4: Discussion
+
+**1. What the rewrite tells us about hardware and indexes**
+
+The join does work proportional to the number of pairs, which grows with the square of the table size. The rewrite does work proportional to the number of rows. Faster hardware or an index only makes the same quadratic work run a constant factor faster. Our own index experiment shows this: the index gave about 2x, while the rewrite gave about 1 500x. The size of the improvement came from changing the algorithm, not from using more resources. So the first question should always be whether the query needs to do this work at all. A better query is also much cheaper than more hardware, and its advantage grows as the data grows.
+
+**2. What if the business needs the pairs themselves?**
+
+Then the output has about 11 billion rows and no rewrite can avoid producing them. Storing only two 4-byte ids per pair would already take about 88 GB.
+
+- *A bigger machine* helps only by a constant factor. Twice the cores gives at most twice the speed, and memory and disk have to handle the huge output as well.
+- *A cluster* can split the work, for example by partitioning the data by country, so N nodes can finish in up to 1/N of the time. But there are limits: the work per country is k x k, so the largest country becomes the bottleneck while other nodes wait. The pairs must also be written and often sent over the network, which adds cost.
+- *The growth stays the same.* With 5 times more data there are 25 times more pairs, so keeping the same runtime would need about 25 times more nodes. A cluster makes the job possible, but it does not make it scale well.
+
+In practice I would first check whether all pairs are really needed. Options are sampling, filtering with an additional join condition (for example same country and same department), processing one country at a time, or streaming results to the consumer instead of storing them.
+
+**3. Limits of an OLTP database for this workload, especially in the cloud**
+
+PostgreSQL here is a single-node, row-oriented system designed for many small, fast transactions. For this workload:
+
+- The query reads whole rows even though only `country` is needed, and it mostly runs in one process.
+- It shares CPU, memory and disk with every other user, so one naive query can slow down the whole database. This is what the exercise describes.
+- Scaling one machine up (more CPU and RAM) becomes expensive quickly and has a hard ceiling.
+
+In a large-scale cloud environment the usual approach is to separate the workloads:
+
+- Keep the OLTP database for transactions.
+- Copy the data to an analytical system (a data warehouse such as BigQuery, Snowflake or Redshift) with columnar storage and distributed processing. There, compute and storage scale independently and heavy queries run on their own resources, so they do not slow down transactions.
+- Smaller measures help too: read replicas for reporting, precomputed aggregates or materialized views, and safeguards such as `statement_timeout` to stop runaway queries.
+
+Even with a distributed engine, a quadratic query stays quadratic. The cloud can reduce the cost of a badly designed query, but it cannot remove it. Query design stays the most important factor for scalability and efficiency.
+
+### Summary
+
+| approach | effect on the self-join |
+|---|---|
+| index on `country` | about 2x faster, same quadratic work |
+| bigger machine | constant factor only |
+| cluster | up to N times faster, but 25x more work for 5x more data |
+| rewrite (sum of k x k) | about 1 500x faster, linear work |
