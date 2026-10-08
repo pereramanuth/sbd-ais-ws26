@@ -184,9 +184,7 @@ Results:
 
 The index made the query about **2x faster**, but the result is still 109.9 million pairs and the query still has to produce and count every one of them.
 
-What to point out in the plan: the join type used, whether the index is actually used, and the number of rows that come out of the join node (about 110 million). The large row count at the join node is where the time goes.
-
-**The index give only a slight improvement.** An index is useful when a query needs a few rows out of many, because it avoids reading the whole table. Here there are only a small number of countries, so each person matches thousands of other people. There is nothing to skip. The index may make the lookup of matches a bit cheaper, which explains the constant-factor gain, but it cannot reduce the number of pairs. The cost is dominated by the output size, not by finding rows.
+**The index gives only a slight improvement.** An index is useful when a query needs a few rows out of many, because it avoids reading the whole table. Here there are only a small number of countries, so each person matches thousands of other people. There is nothing to skip. The index may make the lookup of matches a bit cheaper, which explains the constant-factor gain, but it cannot reduce the number of pairs. The cost is dominated by the output size, not by the process of finding rows.
 
 ### Step 3: Rewrite without a join
 
