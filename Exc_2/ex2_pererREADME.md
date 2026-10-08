@@ -40,7 +40,7 @@ LIMIT 1;
  Emma Brown    | Automotive       |        3 |        2000.00 | 2024-10-11 | Italy
 ```
 
-The highest price is 2000.00, which is the upper limit of the `Automotive` price range in the generator. Several orders can share this value, and `LIMIT 1` returns just one of them.
+
 
 ### B. Top 3 product categories by total quantity sold
 
@@ -60,7 +60,7 @@ LIMIT 3;
  Toys             |         300598
 ```
 
-The three totals are almost identical. The generator picks the category and the quantity (1 to 5) uniformly at random, so every category sells about the same number of items (around 300,000). The ranking is only random noise.
+
 
 ### C. Total revenue per product category
 
@@ -86,7 +86,6 @@ ORDER BY revenue DESC;
  Books            |  12731976.04
 ```
 
-Unlike quantity, revenue differs a lot between categories because each category has its own price range in the generator (Automotive 50 to 2000, Electronics 100 to 1500, Books 5 to 80). Automotive and Electronics together bring in about 64% of the total revenue of about 855.7 million.
 
 ### D. Top 5 customers by total spending
 
@@ -110,15 +109,11 @@ LIMIT 5;
  Daniel Young   |   946030.14 |         973
 ```
 
-`COUNT(*) AS order_count` counts the rows in each group. Each row is one order, so it gives the number of orders per customer name.
+
 
 ### E. What do you notice, and why?
 
-**Observation.** Each of the top 5 "customers" has around 1,000 orders (943 to 1033) and their totals are all close to each other (about 946k to 991k). No real customer places 1,000 orders in two years with such similar spending.
-
-**Explanation.** In `dataset_generator.py`, `random_customer_name()` picks one of 32 first names and one of 33 last names, independently for every order. That gives only 32 x 33 = **1,056 possible names** for 1,000,000 orders. On average each name appears in 1,000,000 / 1,056 = **about 947 orders**, and the `order_count` values in D are all close to this average. The small differences come from random variation.
-
-There is no customer ID in the data, so `GROUP BY customer_name` merges many unrelated simulated people who happen to share a name into one "customer". The ranking in D therefore only shows which names happened to be drawn more often or got slightly more expensive orders. It says nothing about real customer behavior.
+There are 32 first names and 33 last names. The random_customer_name() function generates 32 x 33 random names this equals to 1056 names generated. However , we have a million orders. 1 million / 1056 approx. equals to 947 orders PER NAME.The order_count values are all close to this average.
 
 Check:
 
@@ -126,9 +121,7 @@ Check:
 SELECT COUNT(DISTINCT customer_name) FROM orders;
 ```
 
-This should return 1056 (paste your result here: `____`).
-
-**Lesson.** A real system needs a unique `customer_id`. Names are not unique and must not be used as a key for grouping.
+This gives me 1056.
 
 ---
 
@@ -168,7 +161,7 @@ CREATE TABLE people_200k AS SELECT * FROM people_big WHERE id <= 200000;
 
 When the rows double, the result grows by **4x**, and the time by roughly **4x to 5x**. This is quadratic growth. If a country has k people, the join pairs every person with every person of the same country (including themselves), so that country contributes k x k pairs. Doubling the table doubles every k, so the number of pairs grows 2 x 2 = 4 times. The time follows the number of pairs because the database has to produce and count every pair. The time grew slightly faster than 4x, probably because larger joins use more memory and disk work.
 
-**Prediction for 1M rows.** 1M is 5 times larger than 200k, so the result grows by 5 x 5 = 25 times: 439 395 606 x 25 = about 10.98 billion. The time grows by about 25 times too: 137.6 s x 25 = about 3 440 s, which is about 57 minutes. This matches the exercise statement ("more than 10 minutes"). The real result from Step 3 is 10 983 941 260, so the size prediction was almost exact.
+**Prediction for 1M rows.** 1M is 5 times larger than 200k, so the result grows by 5 x 5 = 25 times: 439 395 606 x 25 = about 10.98 billion. The time grows by about 25 times also : 137.6 s x 25 = about 3 440 s, which is about 57 minutes. This justifies the exercise statement ("more than 10 minutes"). The real result from Step 3 is 10 983 941 260, so the size prediction was very accurate.
 
 ### Step 2: Does an index help?
 
@@ -189,17 +182,11 @@ Results:
 | without index | 109 946 508 | 30.1 s |
 | with index on `country` | 109 946 508 | 16.1 s |
 
-The index made the query about **1.9x faster**, but the result is still 109.9 million pairs and the query still has to produce and count every one of them.
-
-`EXPLAIN ANALYZE` output (paste yours here):
-
-```
-<paste the EXPLAIN ANALYZE output here>
-```
+The index made the query about **2x faster**, but the result is still 109.9 million pairs and the query still has to produce and count every one of them.
 
 What to point out in the plan: the join type used, whether the index is actually used, and the number of rows that come out of the join node (about 110 million). The large row count at the join node is where the time goes.
 
-**Why the index helps only a little.** An index is useful when a query needs a few rows out of many, because it avoids reading the whole table. Here there are only a small number of countries, so each person matches thousands of other people. There is nothing to skip. The index may make the lookup of matches a bit cheaper, which explains the constant-factor gain, but it cannot reduce the number of pairs. The cost is dominated by the output size, not by finding rows.
+**The index give only a slight improvement.** An index is useful when a query needs a few rows out of many, because it avoids reading the whole table. Here there are only a small number of countries, so each person matches thousands of other people. There is nothing to skip. The index may make the lookup of matches a bit cheaper, which explains the constant-factor gain, but it cannot reduce the number of pairs. The cost is dominated by the output size, not by finding rows.
 
 ### Step 3: Rewrite without a join
 
@@ -265,12 +252,3 @@ In a large-scale cloud environment the usual approach is to separate the workloa
 - Smaller measures help too: read replicas for reporting, precomputed aggregates or materialized views, and safeguards such as `statement_timeout` to stop runaway queries.
 
 Even with a distributed engine, a quadratic query stays quadratic. The cloud can reduce the cost of a badly designed query, but it cannot remove it. Query design stays the most important factor for scalability and efficiency.
-
-### Summary
-
-| approach | effect on the self-join |
-|---|---|
-| index on `country` | about 2x faster, same quadratic work |
-| bigger machine | constant factor only |
-| cluster | up to N times faster, but 25x more work for 5x more data |
-| rewrite (sum of k x k) | about 1 500x faster, linear work |
