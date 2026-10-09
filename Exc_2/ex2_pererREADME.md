@@ -223,7 +223,13 @@ The rewrite is about **1 500 times faster** than the predicted join time (3 440 
 
 **1. What the rewrite tells us about hardware and indexes**
 
-The join does work proportional to the number of pairs, which grows with the square of the table size. The rewrite does work proportional to the number of rows. Faster hardware or an index only makes the same quadratic work run a constant factor faster. Our own index experiment shows this: the index gave about 2x, while the rewrite gave about 1 500x. The size of the improvement came from changing the algorithm, not from using more resources. So the first question should always be whether the query needs to do this work at all. A better query is also much cheaper than more hardware, and its advantage grows as the data grows.
+
+The self-join takes every person and matches them with every other person from the same country (including themselves). 
+Then COUNT(*) counts how many matched pairs came out.To do that, the database actually creates every single pair, one by one. 
+With 1M rows that is about 11 billion pairs. The re-write counts how many people per country [inner query] and then squares the count [outer query]. 
+The size of the improvement came from changing the algorithm, not from using more resources. A better query is also much cheaper than more hardware, 
+and its advantage grows as the data grows.
+
 
 **2. What if the business needs the pairs themselves?**
 
