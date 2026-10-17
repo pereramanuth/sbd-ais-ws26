@@ -246,7 +246,7 @@ In practice I would first check whether all pairs are really needed. Options are
 PostgreSQL here is a single-node, row-oriented system designed for many small, fast transactions. For this workload:
 
 - The query reads whole rows even though only `country` is needed, and it mostly runs in one process.
-- It shares CPU, memory and disk with every other user, so one naive query can slow down the whole database. This is what the exercise describes.
+- It shares CPU, memory and disk with every other user, so one naive query can slow down the whole database.
 - Scaling one machine up (more CPU and RAM) becomes expensive quickly and has a hard ceiling.
 
 In a large-scale cloud environment the usual approach is to separate the workloads:
